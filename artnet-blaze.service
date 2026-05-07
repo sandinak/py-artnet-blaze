@@ -1,0 +1,32 @@
+[Unit]
+Description=py-artnet-blaze: ArtNet → Pixelblaze Output Expander bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blaze
+Group=dialout
+ExecStart=/opt/artnet-blaze/venv/bin/python /opt/artnet-blaze/artnet_blaze.py -c /etc/artnet-blaze/config.yaml
+Restart=on-failure
+RestartSec=2
+
+# Real-time scheduling reduces tx-tick jitter under load.
+# Requires CAP_SYS_NICE; comment out if running unprivileged user
+# without capability grant.
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=40
+
+# Kill cleanly so the blackout-on-exit path runs.
+KillSignal=SIGTERM
+TimeoutStopSec=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/artnet-blaze
+
+[Install]
+WantedBy=multi-user.target

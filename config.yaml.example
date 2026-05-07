@@ -1,0 +1,38 @@
+# py-artnet-blaze config
+# Drop at /etc/artnet-blaze/config.yaml or pass via -c.
+
+artnet:
+  # Bind address for ArtNet reception. 0.0.0.0 = all interfaces.
+  # If each step has a dedicated VLAN IP, pin it here to reject strays.
+  bind: "0.0.0.0"
+
+serial:
+  # Pi 3B+: /dev/serial0 is the PL011 UART (the good one).
+  # Ensure enable_uart=1 and disable_bluetooth in /boot/config.txt so
+  # /dev/serial0 maps to the hardware UART, not the mini UART.
+  device: "/dev/serial0"
+  # 2_000_000 is stock POE. Firmware variants support 3_000_000.
+  # Bump to 3M if you go to 144 LED/m density.
+  baudrate: 2000000
+
+bridge:
+  # Output frame rate. 50 gives comfortable headroom at 2 Mbaud /
+  # 144 LEDs × 8 channels. 60 is the ceiling at current density.
+  fps: 50
+
+# Physical strip → ArtNet universe mapping.
+# Current Evolution step: 8 strips × 144 LEDs, 2 strips per universe.
+# Strip 1 SR → Strip 8 SL, top-to-bottom laid out on the front face.
+strips:
+  - { poe_channel: 0, universe: 0, offset: 0,   pixel_count: 144 }  # row 1, SR
+  - { poe_channel: 1, universe: 0, offset: 432, pixel_count: 144 }  # row 1, SL
+  - { poe_channel: 2, universe: 1, offset: 0,   pixel_count: 144 }  # row 2, SR
+  - { poe_channel: 3, universe: 1, offset: 432, pixel_count: 144 }  # row 2, SL
+  - { poe_channel: 4, universe: 2, offset: 0,   pixel_count: 144 }  # row 3, SR
+  - { poe_channel: 5, universe: 2, offset: 432, pixel_count: 144 }  # row 3, SL
+  - { poe_channel: 6, universe: 3, offset: 0,   pixel_count: 144 }  # row 4, SR
+  - { poe_channel: 7, universe: 3, offset: 432, pixel_count: 144 }  # row 4, SL
+
+logging:
+  level: INFO
+  stats_interval_s: 10
