@@ -1,19 +1,44 @@
 # py-artnet-blaze
 
-ArtNet bridge daemon for the Evolution Show Choir "Step" units.
-Forwards ArtDmx into two output paths simultaneously:
+ArtNet bridge daemon for the Evolution Show Choir "Step" units, designed
+to run on a **Raspberry Pi**. Forwards ArtDmx into two output paths
+simultaneously:
 
-- **Pixelblaze Output Expander (POE)** over UART for the WS2812 LED strips
-- **USB DMX dongle** (Enttec USB DMX Pro or Open DMX USB) for fixtures
-  like par cans, bar lights, and movers
+- **Pixelblaze Output Expander (POE)** over the Pi's hardware UART
+  (GPIO14/15 at up to 2 Mbaud) for the WS2812 LED strips
+- **USB DMX dongle** (Enttec USB DMX Pro or Open DMX USB) plugged into
+  any USB port for fixtures like par cans, bar lights, and movers
 
 Plus a built-in **HTTP test panel** at `:8080` for flashing test
 patterns across the whole rig and surfacing live status info (active
 DMX, IPs, uptimes, firmware versions).
 
-Replaces the Fadecandy chain while keeping the Raspberry Pi as the
-configurable endpoint, and adds DMX-out so the same Pi can drive
-non-pixel fixtures from the same QLC+ session.
+Replaces the Fadecandy chain while keeping the Pi as the configurable
+endpoint, and adds DMX-out so the same Pi can drive non-pixel fixtures
+from the same QLC+ session.
+
+## Hardware target
+
+Built around the Raspberry Pi:
+
+- **Raspberry Pi 3B+** running **Raspberry Pi OS** (Debian Bookworm /
+  Bullseye, systemd-based) is the reference platform. Pi 4 and Pi 5
+  work without code changes; Pi Zero 2 W should be fine at 50 FPS but
+  is untested.
+- The **PL011 hardware UART** exposed on GPIO14 (TX → POE RX) and
+  GPIO15. Bluetooth must be disabled so `/dev/serial0` maps to the
+  real UART rather than the mini UART — handled in the install steps
+  [below](#install-on-a-pi).
+- A free **USB port** for the DMX dongle (auto-enumerated as
+  `/dev/ttyUSB0`); plug it in before the daemon starts.
+- **Network** for ArtNet — wired Ethernet preferred for show day, Wi-Fi
+  fine for bench testing.
+
+The daemon's hard Pi dependency is the GPIO UART for POE. If you only
+need DMX-out (no LED strips), it will run on any Linux box with a USB
+DMX dongle. **Development and the test suite run on macOS or plain
+Linux without a Pi** — fake serial ports and an ephemeral UDP socket
+on `127.0.0.1` cover the hardware paths.
 
 ## Architecture
 
