@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Optional
 
 from .overrides import IdentifyOverride
+from .status_led import TEST_COLORS
 from .sysinfo import LiveInfo, StaticInfo
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from .controller import TestController
     from .dmx import DmxFixture
     from .poe import StripMapping
+    from .status_led import StatusLedThread
 
 
 # Single-page UI. Inlined so the daemon ships as one Python package.
@@ -112,6 +114,25 @@ INDEX_HTML = """<!doctype html>
             font-size:9px;display:flex;align-items:center;
             justify-content:center;border-radius:2px;background:#1a1f26;
             color:#888;padding:0 2px}}
+  .readiness-state{{font-size:18px;font-weight:600;letter-spacing:.04em;
+                   padding:12px 14px;border-radius:6px;text-align:center;
+                   text-transform:uppercase;background:#1a1f26;
+                   border:1px solid var(--border)}}
+  .readiness-state.ready{{background:rgba(63,185,80,.15);
+                         border-color:var(--green);color:var(--green)}}
+  .readiness-state.waiting_artnet{{background:rgba(210,153,34,.15);
+                                  border-color:var(--amber);color:var(--amber)}}
+  .readiness-state.fault{{background:rgba(248,81,73,.15);
+                         border-color:var(--red);color:var(--red)}}
+  .readiness-checks{{display:grid;grid-template-columns:repeat(2,1fr);
+                    gap:8px;margin-top:12px}}
+  .check{{display:flex;justify-content:space-between;align-items:center;
+         padding:6px 10px;border-radius:4px;background:#0d1117;
+         border:1px solid var(--border);font-family:var(--mono);font-size:12px}}
+  .check .k{{color:var(--muted)}}
+  .check .v.ok{{color:var(--green)}}
+  .check .v.bad{{color:var(--red)}}
+  .check .v.na{{color:var(--muted)}}
   footer{{text-align:center;color:var(--muted);font-size:12px;
          padding:24px}}
 </style>
@@ -140,6 +161,27 @@ INDEX_HTML = """<!doctype html>
       <button class="btn danger" onclick="post('/test/clear')">Clear</button>
     </div>
     <div id="override" class="override-state">Live ArtNet — no override active.</div>
+  </section>
+
+  <section class="card">
+    <h2>Readiness</h2>
+    <div id="readiness-card">
+      <div id="readiness-state" class="readiness-state">unknown</div>
+      <div id="readiness-checks" class="readiness-checks"></div>
+      <div id="led-row" hidden>
+        <p style="margin:12px 0 8px;color:var(--muted)">
+          LED test (override the live state for 5s):
+        </p>
+        <div class="btn-row">
+          <button class="btn" onclick="post('/test/led/red')">Red</button>
+          <button class="btn" onclick="post('/test/led/amber')">Amber</button>
+          <button class="btn" onclick="post('/test/led/green')">Green</button>
+          <button class="btn" onclick="post('/test/led/blue')">Blue</button>
+          <button class="btn" onclick="post('/test/led/white')">White</button>
+          <button class="btn" onclick="post('/test/led/off')">Off</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section class="card">
@@ -224,6 +266,9 @@ async function refresh() {{
       el.classList.remove('active');
       el.textContent = 'Live ArtNet — no override active.';
     }}
+
+    // Readiness
+    renderReadiness(s.readiness);
 
     // Active DMX
     const universes = Object.keys(s.dmx_active).sort((a,b) => +a - +b);
@@ -327,6 +372,43 @@ function paintFixture(el, f) {{
 function escapeHTML(s) {{
   return String(s).replace(/[&<>"']/g, c =>
     ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c]);
+}}
+
+function renderReadiness(r) {{
+  const stateEl = $('readiness-state');
+  const checksEl = $('readiness-checks');
+  if (!r) {{
+    stateEl.className = 'readiness-state';
+    stateEl.textContent = 'no data';
+    checksEl.innerHTML = '';
+    $('led-row').hidden = true;
+    return;
+  }}
+  stateEl.className = 'readiness-state ' + r.state;
+  let label = r.state;
+  if (r.state === 'ready') label = 'READY';
+  else if (r.state === 'waiting_artnet') label = 'WAITING FOR ARTNET';
+  else if (r.state === 'fault') label = 'FAULT';
+  if (r.led_enabled && r.led_state) label += ` · LED: ${{r.led_state}}`;
+  stateEl.textContent = label;
+
+  const checkLabels = {{
+    network: 'network IP',
+    poe_port_open: 'POE port',
+    dmx_port_open: 'DMX port',
+    artnet_active: 'ArtNet flowing',
+  }};
+  const checks = r.checks || {{}};
+  checksEl.innerHTML = Object.keys(checkLabels).map(k => {{
+    const v = checks[k];
+    let cls, text;
+    if (v === null || v === undefined) {{ cls = 'na'; text = 'n/a'; }}
+    else if (v === true) {{ cls = 'ok'; text = 'ok'; }}
+    else {{ cls = 'bad'; text = 'fail'; }}
+    return `<div class="check"><span class="k">${{checkLabels[k]}}</span><span class="v ${{cls}}">${{text}}</span></div>`;
+  }}).join('');
+
+  $('led-row').hidden = !r.led_enabled;
 }}
 
 // One preview line per strip — physically each strip is a row of LEDs,
@@ -487,9 +569,11 @@ def _build_status(
     receiver: "ArtNetReceiver",
     strips: list["StripMapping"],
     fixtures: list["DmxFixture"],
+    readiness_fn: Optional[callable],
+    status_led: Optional["StatusLedThread"],
     log: logging.Logger,
 ) -> dict:
-    return {
+    payload: dict = {
         "static": static.__dict__,
         "live": LiveInfo.snapshot(static, log).__dict__,
         "override": controller.state(),
@@ -497,6 +581,22 @@ def _build_status(
         "strips": _strip_views(strips, receiver, controller),
         "fixtures": _fixture_views(fixtures, receiver, controller),
     }
+    if readiness_fn is not None:
+        try:
+            report = readiness_fn()
+            payload["readiness"] = {
+                "state": report.state.value,
+                "checks": report.checks,
+                "led_enabled": status_led is not None,
+                "led_state": (
+                    status_led.applied_state.value
+                    if status_led and status_led.applied_state else None
+                ),
+            }
+        except Exception as e:
+            log.warning("readiness evaluation failed: %s", e)
+            payload["readiness"] = {"state": "fault", "error": str(e)}
+    return payload
 
 
 def make_handler(
@@ -505,6 +605,8 @@ def make_handler(
     receiver: "ArtNetReceiver",
     strips: list["StripMapping"],
     fixtures: list["DmxFixture"],
+    readiness_fn: Optional[callable],
+    status_led: Optional["StatusLedThread"],
     log: logging.Logger,
 ):
     """Return a BaseHTTPRequestHandler subclass closed over our deps."""
@@ -540,7 +642,8 @@ def make_handler(
             elif self.path == "/api/status":
                 self._respond_json(
                     _build_status(static, controller, receiver,
-                                  strips, fixtures, log)
+                                  strips, fixtures,
+                                  readiness_fn, status_led, log)
                 )
             elif self.path == "/healthz":
                 self._respond_json({"ok": True})
@@ -563,6 +666,22 @@ def make_handler(
             elif self.path == "/test/clear":
                 controller.clear()
                 self._respond_json({"ok": True})
+            elif self.path.startswith("/test/led/"):
+                color = self.path[len("/test/led/"):]
+                if status_led is None:
+                    self._respond_json(
+                        {"error": "status LED not configured"},
+                        status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                elif color not in TEST_COLORS:
+                    self._respond_json(
+                        {"error": f"unknown color {color!r}",
+                         "valid": sorted(TEST_COLORS.keys())},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                else:
+                    status_led.force_color(TEST_COLORS[color], duration_s=5.0)
+                    self._respond_json({"ok": True, "color": color})
             else:
                 self._respond_404()
 
@@ -586,10 +705,13 @@ class HttpServerThread:
         strips: list["StripMapping"],
         fixtures: list["DmxFixture"],
         log: logging.Logger,
+        readiness_fn: Optional[callable] = None,
+        status_led: Optional["StatusLedThread"] = None,
     ) -> None:
         self.log = log
         self.handler_cls = make_handler(
-            static, controller, receiver, strips, fixtures, log
+            static, controller, receiver, strips, fixtures,
+            readiness_fn, status_led, log,
         )
         self.server = ThreadingHTTPServer((bind, port), self.handler_cls)
         self.server.daemon_threads = True

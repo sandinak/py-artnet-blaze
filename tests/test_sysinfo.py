@@ -10,6 +10,7 @@ from artnet_blaze.sysinfo import (
     LiveInfo,
     StaticInfo,
     fmt_duration,
+    has_network_ip,
     ip_addresses,
     process_uptime_s,
     system_uptime_s,
@@ -64,6 +65,13 @@ def test_ip_addresses_returns_list_with_no_loopback():
     assert isinstance(ips, list)
     for ip in ips:
         assert not ip.startswith("127."), ip
+
+
+def test_has_network_ip_returns_bool():
+    """Smoke test — actual answer depends on the test runner's network,
+    but the function should return a bool quickly and not raise."""
+    val = has_network_ip(timeout_s=0.5)
+    assert isinstance(val, bool)
 
 
 def test_live_info_snapshot_populates_human_strings():

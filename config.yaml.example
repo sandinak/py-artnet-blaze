@@ -85,6 +85,35 @@ dmx:
     - { universe: 4, offset: 0,  dmx_start: 1,  length: 24 }     # bar SR
     - { universe: 4, offset: 24, dmx_start: 25, length: 24 }     # bar SL
 
+# ── Status LED ─────────────────────────────────────────────────────
+# Optional RGB LED wired to 3 GPIO pins. Visible from the top of the
+# step through the clear plastic, lets the crew see at a glance which
+# units are ready. Three colors:
+#   🟢 green  → READY: network up, all configured devices alive,
+#              ArtNet currently flowing.
+#   🟡 amber  → WAITING_ARTNET: daemon healthy, devices ready, no
+#              ArtNet packets in the last `artnet_active_window_s`.
+#   🔴 red    → FAULT: missing network, configured port not open,
+#              or readiness evaluator failed.
+#
+# Wiring (common-cathode RGB LED):
+#   GPIO17 (R) ── 220Ω ──┐
+#   GPIO27 (G) ── 330Ω ──┼─→ LED → GND
+#   GPIO22 (B) ── 330Ω ──┘
+# Use 470Ω across the board if you want it dimmer through the plastic.
+# Common-anode LEDs work too — set common_anode: true.
+#
+# Disable in dev or on Pis using these GPIOs for something else.
+status_led:
+  enabled: false
+  red_pin: 17
+  green_pin: 27
+  blue_pin: 22
+  common_anode: false
+  poll_interval_s: 0.5
+  artnet_active_window_s: 2.0
+  debounce_ticks: 2
+
 # ── HTTP test panel ────────────────────────────────────────────────
 # Single-page status + test-pattern panel. Open http://<pi-ip>:8080/
 # to flash all-white / 50% across the rig and see live ArtNet activity,

@@ -32,7 +32,9 @@ from .dmx import (
 from .http_api import HttpServerThread
 from .overrides import IdentifyOverride
 from .poe import PoeSink
+from .readiness import evaluate_readiness
 from .sink import Sink
+from .status_led import StatusLedThread, make_led
 from .sysinfo import StaticInfo
 
 
@@ -76,7 +78,8 @@ class App:
     dmx_port: Optional[object]
     controller: TestController
     static_info: StaticInfo
-    http: Optional[HttpServerThread]
+    http: Optional[HttpServerThread] = None
+    status_led: Optional[StatusLedThread] = None
 
     @property
     def sinks(self) -> list[Sink]:
@@ -147,20 +150,6 @@ def setup_app(
     elif dmx_enabled:
         log.warning("dmx.enabled=true but no fixtures configured; skipping DMX sink")
 
-    http_cfg = cfg.get("http", {})
-    http: Optional[HttpServerThread] = None
-    if http_cfg.get("enabled", True):
-        http = HttpServerThread(
-            bind=http_cfg.get("bind", "0.0.0.0"),
-            port=int(http_cfg.get("port", 8080)),
-            static=static_info,
-            controller=controller,
-            receiver=rx,
-            strips=strips,
-            fixtures=fixtures,
-            log=log,
-        )
-
     if unit_cfg.get("identify_at_startup", True):
         controller.set_override(
             IdentifyOverride(unit_name=static_info.unit_name, strips=strips)
@@ -171,11 +160,55 @@ def setup_app(
             static_info.unit_name,
         )
 
-    return App(
+    app = App(
         rx=rx, poe_sink=poe_sink, dmx_sink=dmx_sink,
         poe_port=poe_port, dmx_port=dmx_port,
-        controller=controller, static_info=static_info, http=http,
+        controller=controller, static_info=static_info,
     )
+
+    # Status LED — opt-in, polls readiness every poll_interval_s.
+    sled_cfg = cfg.get("status_led", {})
+    artnet_window = float(sled_cfg.get("artnet_active_window_s", 2.0))
+    if sled_cfg.get("enabled", False):
+        led = make_led(
+            int(sled_cfg.get("red_pin", 17)),
+            int(sled_cfg.get("green_pin", 27)),
+            int(sled_cfg.get("blue_pin", 22)),
+            bool(sled_cfg.get("common_anode", False)),
+            log,
+        )
+        app.status_led = StatusLedThread(
+            led=led,
+            evaluator=lambda: evaluate_readiness(app, artnet_window).state,
+            log=log,
+            poll_interval_s=float(sled_cfg.get("poll_interval_s", 0.5)),
+            debounce_ticks=int(sled_cfg.get("debounce_ticks", 2)),
+        )
+        log.info(
+            "status LED enabled (R=%s G=%s B=%s)",
+            sled_cfg.get("red_pin", 17),
+            sled_cfg.get("green_pin", 27),
+            sled_cfg.get("blue_pin", 22),
+        )
+
+    # HTTP server constructed last so it can hold closures over the
+    # fully-assembled app (readiness predicate, LED for the test route).
+    http_cfg = cfg.get("http", {})
+    if http_cfg.get("enabled", True):
+        app.http = HttpServerThread(
+            bind=http_cfg.get("bind", "0.0.0.0"),
+            port=int(http_cfg.get("port", 8080)),
+            static=static_info,
+            controller=controller,
+            receiver=rx,
+            strips=strips,
+            fixtures=fixtures,
+            log=log,
+            readiness_fn=lambda: evaluate_readiness(app, artnet_window),
+            status_led=app.status_led,
+        )
+
+    return app
 
 
 def stats_line(app: App) -> str:
@@ -199,11 +232,15 @@ def shutdown_app(app: App, log: logging.Logger) -> None:
     """Stop everything and close ports. Safe to call more than once."""
     if app.http is not None:
         app.http.stop()
+    if app.status_led is not None:
+        app.status_led.stop()
     for s in app.sinks:
         s.stop()
     app.rx.stop()
     for s in app.sinks:
         s.join(timeout=2.0)
+    if app.status_led is not None:
+        app.status_led.join(timeout=2.0)
     for port in (app.poe_port, app.dmx_port):
         if port is None:
             continue
@@ -242,6 +279,8 @@ def main(argv: list[str], open_poe=None, open_dmx=None) -> int:
         s.start()
     if app.http is not None:
         app.http.start()
+    if app.status_led is not None:
+        app.status_led.start()
 
     stop_event = threading.Event()
 

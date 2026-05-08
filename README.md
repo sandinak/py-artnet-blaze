@@ -11,7 +11,9 @@ simultaneously:
 
 Plus a built-in **HTTP test panel** at `:8080` for flashing test
 patterns across the whole rig and surfacing live status info (active
-DMX, IPs, uptimes, firmware versions).
+DMX, IPs, uptimes, firmware versions), and an optional **physical RGB
+status LED** wired to Pi GPIO that glows green / amber / red so the
+crew can see at a glance which units are ready.
 
 Replaces the Fadecandy chain while keeping the Pi as the configurable
 endpoint, and adds DMX-out so the same Pi can drive non-pixel fixtures
@@ -33,6 +35,9 @@ Built around the Raspberry Pi:
   `/dev/ttyUSB0`); plug it in before the daemon starts.
 - **Network** for ArtNet — wired Ethernet preferred for show day, Wi-Fi
   fine for bench testing.
+- *(Optional)* 3 GPIO pins (default BCM 17/27/22) + a 5mm RGB LED for
+  the status indicator. Visible from the top of the step through clear
+  plastic; see [Status LED](#status-led).
 
 The daemon's hard Pi dependency is the GPIO UART for POE. If you only
 need DMX-out (no LED strips), it will run on any Linux box with a USB
@@ -70,8 +75,11 @@ artnet_blaze/
   dmx.py        Enttec USB DMX Pro + Open DMX USB sinks (incl. fw probe)
   sink.py       Sink base class (tick loop, lifecycle)
   controller.py Test-pattern override (powers the HTTP panel buttons)
+  overrides.py  UniformByte / Identify overrides + 3x4 bitmap font
   http_api.py   Single-page test panel (stdlib http.server)
   sysinfo.py    Versions / OS / IPs / uptime collector
+  status_led.py RGB status LED driver (gpiozero) + debounced state thread
+  readiness.py  Readiness predicate + per-check breakdown
   config.py     YAML loading + validation
   main.py       CLI wiring (entry point: `python -m artnet_blaze`)
 tests/          pytest suite — no hardware required
@@ -202,6 +210,79 @@ the identify pattern simply paints nothing — strips stay dark.
 JSON API for tooling: `GET /api/status` returns a structured snapshot
 of everything on the page; `POST /test/{white,half,identify,clear}`
 sets/clears overrides; `GET /healthz` for liveness probes.
+
+### Status LED
+
+Optional 5mm RGB LED visible from the top of the step (through the
+clear plastic, ~12" away). Tells the crew at a glance which unit is
+ready, **without** needing a laptop or a phone.
+
+Three colors driven by a readiness predicate that runs every 500ms
+and debounces transitions over 2 ticks (≈1s):
+
+| Color    | Meaning                                                        |
+|----------|----------------------------------------------------------------|
+| 🟢 Green  | READY — network + all configured devices + ArtNet flowing     |
+| 🟡 Amber  | WAITING_ARTNET — daemon healthy, no packets in last 2s         |
+| 🔴 Red    | FAULT — no network, port not open, or evaluator errored        |
+| (off)    | Daemon not running, LED disabled, or no Pi (noop backend)      |
+
+#### Hardware
+
+- 1× 5mm common-cathode RGB LED (~$0.50)
+- 3× current-limiting resistors:
+  - **220Ω** for the red leg (R)
+  - **330Ω** for the green and blue legs (G, B)
+  - Different forward voltages → different resistors. Use 470Ω across
+    the board if you want it dim through the plastic.
+
+```
+       Pi GPIO                                 RGB LED
+   ┌──────────────┐                       ┌──────────────┐
+   │  GPIO17  ────┼──── 220Ω ─────────────┤ R            │
+   │  GPIO27  ────┼──── 330Ω ─────────────┤ G            │
+   │  GPIO22  ────┼──── 330Ω ─────────────┤ B            │
+   │  GND     ────┼───────────────────────┤ K (cathode)  │
+   └──────────────┘                       └──────────────┘
+```
+
+Common-anode LEDs work too — wire the long leg to 3.3V instead of GND
+and set `status_led.common_anode: true` in config (drives are inverted).
+
+#### Software
+
+`gpiozero` ships preinstalled on Raspberry Pi OS — no extra deps. On
+non-Pi (dev machines, CI), the LED falls back to a noop backend that
+logs state changes instead of touching hardware, so the daemon runs
+identically everywhere.
+
+Enable in config:
+
+```yaml
+status_led:
+  enabled: true
+  red_pin: 17
+  green_pin: 27
+  blue_pin: 22
+  common_anode: false
+  poll_interval_s: 0.5         # how often the predicate runs
+  artnet_active_window_s: 2.0  # "ArtNet flowing" tolerance
+  debounce_ticks: 2            # ticks of stable state before applying
+```
+
+#### Verifying wiring
+
+The HTTP test panel exposes a *Readiness* card with per-check
+breakdown (network / POE port / DMX port / ArtNet flowing) and six
+LED-test buttons that force a color for 5 seconds: red, amber, green,
+blue, white, off. Useful for "did I solder this right" before show day.
+
+```bash
+# CLI equivalent if you don't have a browser handy
+curl -X POST http://<pi>:8080/test/led/green
+curl -X POST http://<pi>:8080/test/led/red
+curl -X POST http://<pi>:8080/test/led/off
+```
 
 ### Picking a DMX protocol
 

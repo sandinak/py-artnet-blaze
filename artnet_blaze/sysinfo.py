@@ -121,6 +121,24 @@ def ip_addresses(log: Optional[logging.Logger] = None) -> list[str]:
     return sorted(ips)
 
 
+def has_network_ip(timeout_s: float = 0.1) -> bool:
+    """Fast yes/no: does this host have any non-loopback IPv4?
+
+    Uses the connect-trick — open a UDP socket to a non-routable address,
+    read back the local sockname. No packets sent. Returns False if the
+    socket layer can't pick a non-loopback source (network down, no IP).
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(timeout_s)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return bool(ip and not ip.startswith("127."))
+    except OSError:
+        return False
+
+
 def fmt_duration(seconds: Optional[float]) -> str:
     """Human-readable duration: "3d 14h 22m" / "1h 5m" / "42s"."""
     if seconds is None:

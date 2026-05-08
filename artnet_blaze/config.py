@@ -46,6 +46,21 @@ DEFAULT_CONFIG: dict = {
         "bind": "0.0.0.0",
         "port": 8080,
     },
+    # Physical RGB status LED on the Pi: green = ready, amber = waiting
+    # for ArtNet, red = fault. Opt-in (default off) so dev machines and
+    # Pis using these GPIOs for something else don't get surprised.
+    # Defaults assume a common-cathode RGB LED on BCM 17 (R), 27 (G),
+    # 22 (B). See README "Status LED wiring".
+    "status_led": {
+        "enabled": False,
+        "red_pin": 17,
+        "green_pin": 27,
+        "blue_pin": 22,
+        "common_anode": False,
+        "poll_interval_s": 0.5,
+        "artnet_active_window_s": 2.0,
+        "debounce_ticks": 2,
+    },
     "logging": {"level": "INFO", "stats_interval_s": 10},
 }
 

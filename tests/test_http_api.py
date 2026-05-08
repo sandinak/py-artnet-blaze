@@ -208,6 +208,100 @@ def test_server_stop_is_idempotent():
     server.stop()  # second call must not raise
 
 
+# ── readiness + LED routes ──────────────────────────────────────
+
+
+def test_test_led_route_returns_503_when_led_disabled(http_server):
+    server, *_ = http_server
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(f"http://127.0.0.1:{server.port}/test/led/green")
+    assert exc.value.code == 503
+
+
+def _server_with_led(strips=None, fixtures=None):
+    """Build an HttpServerThread with a mocked status LED + readiness fn
+    so we can exercise the LED routes and the readiness payload without
+    grabbing real GPIOs or the full app."""
+    from artnet_blaze.readiness import ReadinessReport
+    from artnet_blaze.status_led import (
+        Readiness, StatusLedThread, _NoopLed,
+    )
+
+    log = _quiet()
+    rx = ArtNetReceiver("127.0.0.1", {0}, log)
+    controller = TestController(rx)
+    static = StaticInfo.collect("test")
+    led = _NoopLed(log)
+    state_holder = {"state": Readiness.READY}
+    sled = StatusLedThread(
+        led=led, evaluator=lambda: state_holder["state"], log=log,
+        poll_interval_s=999,  # never auto-advances inside the test
+    )
+    sled._applied = Readiness.READY  # pretend it's been applied
+    server = HttpServerThread(
+        bind="127.0.0.1", port=0,
+        static=static, controller=controller,
+        receiver=rx, strips=strips or [], fixtures=fixtures or [],
+        log=log,
+        readiness_fn=lambda: ReadinessReport(
+            state=state_holder["state"],
+            checks={"network": True, "poe_port_open": True,
+                    "dmx_port_open": None, "artnet_active":
+                    state_holder["state"] == Readiness.READY},
+        ),
+        status_led=sled,
+    )
+    server.start()
+    return server, sled, led, state_holder
+
+
+def test_test_led_route_forces_color():
+    from artnet_blaze.status_led import TEST_COLORS
+    server, sled, led, _ = _server_with_led()
+    try:
+        status, body = _post(f"http://127.0.0.1:{server.port}/test/led/red")
+        assert status == 200
+        assert body == {"ok": True, "color": "red"}
+        assert led.color == TEST_COLORS["red"]
+    finally:
+        server.stop()
+
+
+def test_test_led_route_rejects_unknown_color():
+    server, *_ = _server_with_led()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"http://127.0.0.1:{server.port}/test/led/chartreuse")
+        assert exc.value.code == 400
+    finally:
+        server.stop()
+
+
+def test_status_includes_readiness_when_evaluator_present():
+    from artnet_blaze.status_led import Readiness
+    server, _, _, state_holder = _server_with_led()
+    try:
+        _, body = _get(f"http://127.0.0.1:{server.port}/api/status")
+        assert "readiness" in body
+        assert body["readiness"]["state"] == "ready"
+        assert body["readiness"]["led_enabled"] is True
+        assert body["readiness"]["checks"]["network"] is True
+
+        # Flip the evaluator to fault and re-check.
+        state_holder["state"] = Readiness.FAULT
+        _, body2 = _get(f"http://127.0.0.1:{server.port}/api/status")
+        assert body2["readiness"]["state"] == "fault"
+    finally:
+        server.stop()
+
+
+def test_status_omits_readiness_when_no_evaluator(http_server):
+    """Default fixture has no readiness_fn → key absent from JSON."""
+    server, *_ = http_server
+    _, body = _get(f"http://127.0.0.1:{server.port}/api/status")
+    assert "readiness" not in body
+
+
 # ── strip-view tests ────────────────────────────────────────────
 
 
