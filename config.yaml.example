@@ -6,32 +6,99 @@ artnet:
   # If each step has a dedicated VLAN IP, pin it here to reject strays.
   bind: "0.0.0.0"
 
+# ── Unit identity ──────────────────────────────────────────────────
+# Used by the HTTP test panel: shown as a banner in the header and
+# rendered on the LEDs by the "Identify" test pattern (3×4 bitmap font
+# painted across the middle of the rows in dim grey, alongside a
+# row-count staircase on SR and a 4-LED white tip on SL).
+unit:
+  name: "US1"   # e.g. "US1" = upstage step 1, "DSL2" = downstage left 2
+
+  # Paint the identify pattern as soon as the daemon starts, holding
+  # it until live ArtNet arrives (and then for `min_hold_s` more, per
+  # the controller's standard rule). Useful for confirming a freshly-
+  # booted Pi is reachable, drawing the right LEDs, and self-labels
+  # correctly — without needing QLC+ to start sending first.
+  # Disable for show day if you'd rather not see the brief flash on
+  # restart.
+  identify_at_startup: true
+
+# ── POE (Pixelblaze Output Expander) ───────────────────────────────
 serial:
   # Pi 3B+: /dev/serial0 is the PL011 UART (the good one).
   # Ensure enable_uart=1 and disable_bluetooth in /boot/config.txt so
   # /dev/serial0 maps to the hardware UART, not the mini UART.
   device: "/dev/serial0"
   # 2_000_000 is stock POE. Firmware variants support 3_000_000.
-  # Bump to 3M if you go to 144 LED/m density.
   baudrate: 2000000
 
 bridge:
-  # Output frame rate. 50 gives comfortable headroom at 2 Mbaud /
-  # 144 LEDs × 8 channels. 60 is the ceiling at current density.
+  # POE output frame rate. 50 gives comfortable headroom at 2 Mbaud /
+  # 64 LEDs × 8 channels.
   fps: 50
 
 # Physical strip → ArtNet universe mapping.
-# Current Evolution step: 8 strips × 144 LEDs, 2 strips per universe.
-# Strip 1 SR → Strip 8 SL, top-to-bottom laid out on the front face.
+# Evolution step rebuild: 8 strips × 64 LEDs, 2 strips per universe,
+# 192 bytes per strip. Bytes 384..511 of each universe are free for
+# piggybacked DMX fixtures (see "dmx.fixtures" below) if desired.
+#
+# `row` and `side` are optional but power the Identify test pattern:
+#   row:  1-based step row, top → bottom
+#   side: "SR" (stage right, near edge) or "SL" (stage left, far edge)
 strips:
-  - { poe_channel: 0, universe: 0, offset: 0,   pixel_count: 144 }  # row 1, SR
-  - { poe_channel: 1, universe: 0, offset: 432, pixel_count: 144 }  # row 1, SL
-  - { poe_channel: 2, universe: 1, offset: 0,   pixel_count: 144 }  # row 2, SR
-  - { poe_channel: 3, universe: 1, offset: 432, pixel_count: 144 }  # row 2, SL
-  - { poe_channel: 4, universe: 2, offset: 0,   pixel_count: 144 }  # row 3, SR
-  - { poe_channel: 5, universe: 2, offset: 432, pixel_count: 144 }  # row 3, SL
-  - { poe_channel: 6, universe: 3, offset: 0,   pixel_count: 144 }  # row 4, SR
-  - { poe_channel: 7, universe: 3, offset: 432, pixel_count: 144 }  # row 4, SL
+  - { poe_channel: 0, universe: 0, offset: 0,   pixel_count: 64, row: 1, side: SR }
+  - { poe_channel: 1, universe: 0, offset: 192, pixel_count: 64, row: 1, side: SL }
+  - { poe_channel: 2, universe: 1, offset: 0,   pixel_count: 64, row: 2, side: SR }
+  - { poe_channel: 3, universe: 1, offset: 192, pixel_count: 64, row: 2, side: SL }
+  - { poe_channel: 4, universe: 2, offset: 0,   pixel_count: 64, row: 3, side: SR }
+  - { poe_channel: 5, universe: 2, offset: 192, pixel_count: 64, row: 3, side: SL }
+  - { poe_channel: 6, universe: 3, offset: 0,   pixel_count: 64, row: 4, side: SR }
+  - { poe_channel: 7, universe: 3, offset: 192, pixel_count: 64, row: 4, side: SL }
+
+# ── DMX (USB dongle) ───────────────────────────────────────────────
+# Set enabled: true and adjust device/protocol for your dongle.
+#   protocol: enttec_pro  → cleanly framed serial (Enttec USB DMX Pro
+#                            and most "DMX512-A / Enttec compatible"
+#                            UKing dongles). Recommended.
+#   protocol: open_dmx    → raw FTDI bit-bang. Cheapest UKing dongles
+#                            that don't speak Enttec framing.
+#
+# Each fixture pulls `length` bytes from `universe[offset:]` and places
+# them at slots `dmx_start..dmx_start+length-1` on the dongle's outgoing
+# DMX wire (1-based, like fixture addressing). Source universes may
+# either piggyback an existing POE universe (above) or be dedicated.
+dmx:
+  enabled: false
+  device: "/dev/ttyUSB0"
+  protocol: "enttec_pro"
+  fps: 40
+
+  # Option A: piggyback DMX bytes onto a POE universe above. Bar lights
+  # live at offset 384 of universe 0, beyond where the strip pixel data
+  # ends (0..383). Two 24-channel bars → 48 channels total.
+  # fixtures:
+  #   - { universe: 0, offset: 384, dmx_start: 1,  length: 24 }   # bar SR
+  #   - { universe: 0, offset: 408, dmx_start: 25, length: 24 }   # bar SL
+
+  # Option B (simpler in QLC+): dedicate universe 4 to DMX fixtures.
+  fixtures:
+    - { universe: 4, offset: 0,  dmx_start: 1,  length: 24 }     # bar SR
+    - { universe: 4, offset: 24, dmx_start: 25, length: 24 }     # bar SL
+
+# ── HTTP test panel ────────────────────────────────────────────────
+# Single-page status + test-pattern panel. Open http://<pi-ip>:8080/
+# to flash all-white / 50% across the rig and see live ArtNet activity,
+# IPs, uptimes, and firmware versions. Stdlib-only, no extra deps.
+#
+# Test patterns override every output byte for at least 5 seconds. If
+# ArtNet is flowing, override yields back to live data after that window;
+# if ArtNet is silent, the override stays until traffic resumes.
+#
+# Don't expose this to the public internet — it has no auth.
+http:
+  enabled: true
+  bind: "0.0.0.0"
+  port: 8080
 
 logging:
   level: INFO

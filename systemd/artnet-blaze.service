@@ -1,5 +1,5 @@
 [Unit]
-Description=py-artnet-blaze: ArtNet → Pixelblaze Output Expander bridge
+Description=py-artnet-blaze: ArtNet → Pixelblaze POE + USB DMX bridge
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=simple
 User=blaze
 Group=dialout
-ExecStart=/opt/artnet-blaze/venv/bin/python /opt/artnet-blaze/artnet_blaze.py -c /etc/artnet-blaze/config.yaml
+ExecStart=/opt/artnet-blaze/venv/bin/python -m artnet_blaze -c /etc/artnet-blaze/config.yaml
+WorkingDirectory=/opt/artnet-blaze
 Restart=on-failure
 RestartSec=2
 
